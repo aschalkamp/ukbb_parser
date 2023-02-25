@@ -1,3 +1,17 @@
+This Fork
+===============
+This repo is forked. I submitted changes to allow for the extraction of specific visits. For this to work, include the following code in ukbb_parser/shared_utils/util.py:
+
+def get_visit(df,field_type):
+    
+    result = pd.Series(np.nan, index = df.index)
+    ID = re.findall(r'^\D*(\d+)',df.columns[0])[0]
+    column = f'{ID}-{field_type}.0'
+    result = df[column]
+
+    return result
+    
+
 What is ukbb_parser?
 ===============
 
