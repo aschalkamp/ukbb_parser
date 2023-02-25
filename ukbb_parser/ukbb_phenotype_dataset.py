@@ -3,8 +3,8 @@ import inspect
 import numpy as np
 import pandas as pd
 
-from .shared_utils.util import log, set_series_to_hot_encoding_df
-from .ukbb_parser import create_dataset, create_ICD10_dataset, pivot_ICD10_tree_to_dataset
+from shared_utils.util import log, set_series_to_hot_encoding_df
+from ukbb_parser import create_dataset, create_ICD10_dataset, pivot_ICD10_tree_to_dataset
 
 USER_SPECIFIED_SEXES = {
     # user_specified_sex_code: (sex_name, ukbb_sex_value)
@@ -13,7 +13,7 @@ USER_SPECIFIED_SEXES = {
 }
         
 def create_phenotype_dataset(full_phenotype_specs, nrows = None, only_caucasians = True, no_kinship = True, \
-        parse_dataset_covariates_kwargs = dict(), ignore_samples_without_any_ICD10 = True, verbose = True):
+        parse_dataset_covariates_kwargs = dict(), ignore_samples_without_any_ICD10 = True, verbose = True, code = '19'):
     
     '''
     Create a dataset of phenotypes (and covariates) according to a list of phenotype specifications.
@@ -47,7 +47,6 @@ def create_phenotype_dataset(full_phenotype_specs, nrows = None, only_caucasians
             full_phenotype_spec.phenotype_spec.get_required_ukbb_field_specs()]
     required_ICD10_codings = set.union(*(full_phenotype_spec.phenotype_spec.get_required_ICD10_codings() for full_phenotype_spec in \
             full_phenotype_specs))
-    
     if len(required_ICD10_codings) == 0:
         eid, fields, covariates = create_dataset(required_ukbb_field_specs, nrows = nrows, only_caucasians = only_caucasians, \
                 no_kinship = no_kinship, parse_dataset_covariates_kwargs = parse_dataset_covariates_kwargs, verbose = verbose)
@@ -57,7 +56,7 @@ def create_phenotype_dataset(full_phenotype_specs, nrows = None, only_caucasians
         eid, ICD10_tree, fields, covariates, any_ICD10_mask = create_ICD10_dataset(required_ukbb_field_specs, nrows = nrows, \
                 only_caucasians = only_caucasians, no_kinship = no_kinship, parse_dataset_covariates_kwargs = \
                 parse_dataset_covariates_kwargs, filter_samples_without_ICD10 = False, desired_ICD10_codes = required_ICD10_codings, \
-                verbose = verbose)
+                verbose = verbose, code = code)
                 
     if not ignore_samples_without_any_ICD10:
         any_ICD10_mask = pd.Series(True, index = any_ICD10_mask.index)

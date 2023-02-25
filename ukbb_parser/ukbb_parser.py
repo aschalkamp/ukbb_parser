@@ -7,10 +7,11 @@ import pandas as pd
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 
-from .shared_utils.util import log, create_time_measure_if_verbose, safe_symlink, swap_series_index_and_value, value_df_to_hot_encoding_df, \
-        resolve_dummy_variable_trap, get_row_last_values
+from shared_utils.util import log, create_time_measure_if_verbose, safe_symlink, swap_series_index_and_value, value_df_to_hot_encoding_df, \
+        resolve_dummy_variable_trap, get_row_last_values, get_visit
 
-UKBB_PATHS_SETTINGS_FILE_PATH = os.path.expanduser('~/.ukbb_paths.py')
+UKBB_PATHS_SETTINGS_FILE_PATH = os.path.expanduser('/scratch/c.c21013066/UKBIOBANK_DataPreparation/.ukbb_paths.py')
+
 
 # See: http://biobank.ctsu.ox.ac.uk/crystal
 COVARIATE_FIELDS = [
@@ -23,13 +24,23 @@ COVARIATE_FIELDS = [
 # See: http://biobank.ctsu.ox.ac.uk/crystal
 ICD10_FIELDS = [
     # (field_name, field_id, field_type)
-    ('main diagnoses', 41202, 'raw'),
-    ('secondary diagnoses', 41204, 'raw'),
+    ('diagnoses', 41270, 'raw'),
     ('cancer type', 40006, 'raw'),
     ('primary cause of death', 40001, 'raw'),
     ('secondary cause of death', 40002, 'raw'),
     ('external causes', 41201, 'raw'),
 ]
+ICD9_FIELDS = [
+    # (field_name, field_id, field_type)
+    ('diagnoses', 41271, 'raw'),
+    ('cancer type', 40013, 'raw'),
+]
+SELF_FIELDS = [
+    # (field_name, field_id, field_type)
+    ('diagnoses', 20002,'raw')
+]
+
+FIELDS = {'19':ICD10_FIELDS,'87':ICD9_FIELDS,'6':SELF_FIELDS}
 
 # See: http://biobank.ctsu.ox.ac.uk/crystal/field.cgi?id=21000
 ETHNIC_BACKGROUND_FIELD_ID = 21000
@@ -83,7 +94,7 @@ def get_chrom_imputation_data(chrom):
     return BgenParser(bgen_file_path, bgi_file_path, sample_file_path)
     
 def create_dataset(fields_specs, nrows = None, only_caucasians = True, no_kinship = True, parse_dataset_covariates_kwargs = dict(), \
-        verbose = True):
+        verbose = True, code = '19'):
     
     '''
     Creates a UKBB dataset for requested fields.
@@ -113,8 +124,7 @@ def create_dataset(fields_specs, nrows = None, only_caucasians = True, no_kinshi
     # Read the raw dataset.
     
     field_ids = _determine_required_field_ids(fields_specs, only_caucasians)
-    raw_dataset = read_raw_dataset(field_ids, nrows = nrows, verbose = verbose)
-    
+    raw_dataset = read_raw_dataset(field_ids, nrows = nrows, verbose = verbose, code = code)
     if verbose:
         log('Read a dataset of %d samples.' % len(raw_dataset))
     
@@ -150,7 +160,7 @@ def create_dataset(fields_specs, nrows = None, only_caucasians = True, no_kinshi
 
 def create_ICD10_dataset(additional_fields_specs = [], nrows = None, only_caucasians = True, no_kinship = True, \
         parse_dataset_covariates_kwargs = dict(), filter_samples_without_ICD10 = True, desired_ICD10_codes = None, \
-        filter_empty_nodes = True, verbose = True):
+        filter_empty_nodes = True, verbose = True, code = '19'):
     
     '''
     Creates a UKBB dataset in the form of an ICD-10 tree, for additioank requested fields (if provided).
@@ -181,12 +191,11 @@ def create_ICD10_dataset(additional_fields_specs = [], nrows = None, only_caucas
     '''
         
     # Create the basic dataset.
-    all_fields_specs = additional_fields_specs + ICD10_FIELDS
+    all_fields_specs = additional_fields_specs + FIELDS[code]
     eid, all_fields, covariates = create_dataset(all_fields_specs, nrows = nrows, only_caucasians = only_caucasians, no_kinship = no_kinship, \
-            parse_dataset_covariates_kwargs = parse_dataset_covariates_kwargs, verbose = verbose)
-    
+            parse_dataset_covariates_kwargs = parse_dataset_covariates_kwargs, verbose = verbose, code=code)
     # Split the created dataset into raw_ICD10_dataset and additional_fields.
-    ICD10_columns = {column for _, field_id, _ in ICD10_FIELDS for column in _get_field_columns(all_fields.columns, field_id)}
+    ICD10_columns = {column for _, field_id, _ in FIELDS[code] for column in _get_field_columns(all_fields.columns, field_id)}
     raw_ICD10_dataset = all_fields[list(ICD10_columns)]
     additional_fields = all_fields[[column for column in all_fields.columns if column not in ICD10_columns]]
     any_ICD10_mask = pd.notnull(raw_ICD10_dataset).any(axis = 1)
@@ -204,7 +213,7 @@ def create_ICD10_dataset(additional_fields_specs = [], nrows = None, only_caucas
     # Parse the raw_ICD10_dataset into an ICD10_tree.
     with create_time_measure_if_verbose('Parsing the read dataset into an ICD-10 tree...', verbose):
         ICD10_tree = parse_raw_ICD10_dataset_into_tree(raw_ICD10_dataset, desired_ICD10_codes = desired_ICD10_codes, \
-                filter_empty_nodes = filter_empty_nodes, verbose = verbose)
+                filter_empty_nodes = filter_empty_nodes, verbose = verbose, code = code)
     
     # Return the results.
     return eid, ICD10_tree, additional_fields, covariates, any_ICD10_mask
@@ -248,7 +257,6 @@ def filter_ICD10_tree(ICD10_tree, desired_ICD10_codes, verbose = True):
     
     if verbose:
         log('Filtering the ICD-10 tree to keep only nodes descending from %d specific codes...' % len(desired_ICD10_codes))
-    
     tree_mask = pd.Series(False, index = ICD10_tree.index)
     coding_to_node_id = ICD10_tree.reset_index().set_index('coding')['node_id']
     node_ids_to_visit = {coding_to_node_id[coding] for coding in desired_ICD10_codes}
@@ -265,8 +273,8 @@ def filter_ICD10_tree(ICD10_tree, desired_ICD10_codes, verbose = True):
     
     return ICD10_tree[tree_mask]
 
-def construct_ICD10_tree(desired_ICD10_codes = None, verbose = True):
-
+def construct_ICD10_tree(desired_ICD10_codes = None, verbose = True, code="19"):
+    
     '''
     Constructs an ICD-10 tree (not associated with samples at this point).
     @param desired_ICD10_codes (set of strings or None): If not None, will construct the ICD-10 tree using only nodes descending from these
@@ -275,16 +283,18 @@ def construct_ICD10_tree(desired_ICD10_codes = None, verbose = True):
     @return: A pd.DataFrame representing the constructed ICD-10 tree, where each row represents an ICD-10 node and pointing to its direct
     parent and all descending children.
     '''
-
-    ICD10_tree = pd.read_csv(os.path.join(ukbb_paths.CODINGS_DIR, 'coding19.tsv'), sep = '\t').set_index('node_id')
+    ICD10_tree = pd.read_csv(os.path.join(ukbb_paths.CODINGS_DIR, f'coding{code}.tsv'), sep = '\t',dtype={'coding':str}).set_index('node_id')
+    if code == '87':
+        # in icd9 tree ID 19155 is listed as parent ID for some disorders but that is not in list, true parent is 116
+        ICD10_tree.loc[ICD10_tree['parent_id']==19155,'parent_id'] = 116
+        
     _add_children_ids(ICD10_tree)
 
     if desired_ICD10_codes is not None:
-        ICD10_tree = filter_ICD10_tree(ICD10_tree, desired_ICD10_codes, verbose = verbose)
-            
+        ICD10_tree = filter_ICD10_tree(ICD10_tree, desired_ICD10_codes, verbose = verbose)       
     return ICD10_tree
-    
-def parse_raw_ICD10_dataset_into_tree(raw_ICD10_dataset, desired_ICD10_codes = None, filter_empty_nodes = True, verbose = True):
+
+def parse_raw_ICD10_dataset_into_tree(raw_ICD10_dataset, desired_ICD10_codes = None, filter_empty_nodes = True, verbose = True, code = "19"):
     
     '''
     Parses a raw dataset with ICD-10 codings (e.g. from the fields specified in ICD10_FIELDS) into a structured ICD-10 tree which is
@@ -299,12 +309,10 @@ def parse_raw_ICD10_dataset_into_tree(raw_ICD10_dataset, desired_ICD10_codes = N
     node are present in the 'samples' column, which contains, for each ICD-10 node, a set of strings indicating the sample IDs. These sample
     IDs correspond to the index of each sample in the provided raw_ICD10_dataset. 
     '''
-    
-    ICD10_tree = construct_ICD10_tree(desired_ICD10_codes = desired_ICD10_codes, verbose = verbose)
+    ICD10_tree = construct_ICD10_tree(desired_ICD10_codes = desired_ICD10_codes, verbose = verbose, code = code)
     relevant_codings = set(ICD10_tree['coding'])
     coding_to_ancestor_node_indices = _get_ICD10_tree_coding_to_ancestor_node_indices(ICD10_tree)
     tree_sample_sets = [set() for _ in range(len(ICD10_tree))]
-    
     for sample, raw_sample_ICD10_codings in raw_ICD10_dataset.iterrows():
         for coding in set(raw_sample_ICD10_codings.dropna().unique()) & relevant_codings:
             for node_index in coding_to_ancestor_node_indices[coding]:
@@ -312,7 +320,6 @@ def parse_raw_ICD10_dataset_into_tree(raw_ICD10_dataset, desired_ICD10_codes = N
     
     ICD10_tree['samples'] = tree_sample_sets
     ICD10_tree['n_samples'] = ICD10_tree['samples'].apply(len)
-    
     if filter_empty_nodes:
         
         ICD10_tree_mask = (ICD10_tree['n_samples'] > 0)
@@ -320,10 +327,9 @@ def parse_raw_ICD10_dataset_into_tree(raw_ICD10_dataset, desired_ICD10_codes = N
         
         if verbose:
             log('Keeping only %d ICD-10 nodes that contain any samples (of %d nodes).' % (ICD10_tree_mask.sum(), len(ICD10_tree_mask)))
-    
     return ICD10_tree
 
-def read_raw_dataset(field_ids, nrows = None, verbose = True):
+def read_raw_dataset(field_ids, nrows = None, verbose = True, code = '19'):
 
     '''
     Read a raw dataset from UKBB's primary CSV file for a set of requested fields.
@@ -336,12 +342,10 @@ def read_raw_dataset(field_ids, nrows = None, verbose = True):
     
     covariate_field_ids = set(list(zip(*COVARIATE_FIELDS))[1])
     all_field_ids = covariate_field_ids | set(field_ids)
-
     headers = pd.read_csv(ukbb_paths.PHENOTYPE_DATASET_CSV_FILE_PATH, encoding = ukbb_paths.PHENOTYPE_DATASET_CSV_FILE_ENCODING, nrows = 1).columns
     relevant_headers = [i for i, header in enumerate(headers) if header == 'eid' or \
-            any([header.startswith('%d-' % field_id) for field_id in all_field_ids])]
-    ICD10_dtypes = {i: str for i in relevant_headers if any(headers[i].startswith('%d-' % field_id) for _, field_id, _ in ICD10_FIELDS)}
-
+            any([header.startswith(f'{field_id}-') for field_id in all_field_ids])]
+    ICD10_dtypes = {i: str for i in relevant_headers if any(headers[i].startswith(f'{field_id}-') for _, field_id, _ in FIELDS[code])}
     with create_time_measure_if_verbose('Reading %s dataset rows of %d columns (for %d fields)...' % ('all' if nrows is None else nrows, \
             len(relevant_headers), len(all_field_ids)), verbose):
         
@@ -418,7 +422,6 @@ def parse_fields(raw_dataset, fields_specs, verbose = True):
     '''
         
     parsed_fields = []
-    
     for field_name, field_id, field_type in fields_specs:
         
         if field_type == 'ignore':
@@ -482,7 +485,8 @@ def parse_field_data(raw_field_dataset, field_type, null_values = {-1, -3}):
     the given field (it's important not to accidentally provide columns of other fields).
     @param field_type ('binary', 'continuous', 'set' or a function): If a function, will just apply it on the received dataframe (after determining
     null values). If 'binary', will be 1 if there if at least one of the columns is 1, 0 if all the columns are 0, or null if all the columns are null.
-    If 'continuous', will take the last not-null value of each row. If 'set', will return a series of sets, where each set contains all the not-null
+    If 'continuous', will take the last not-null value of each row. If 'set', will return a series of sets, where each set contains all the not-null.
+    If 0,1,2 return column from respective visit
     values collected from the row.
     @param null_values (set of numbers): The values -1 (Do not know) and -3 (Prefer not to answer) are interpreted as null (np.nan) by default.
     @return: A pd.Series of the parsed values, with an index corresponding to the index of the original dataframe.
@@ -490,7 +494,6 @@ def parse_field_data(raw_field_dataset, field_type, null_values = {-1, -3}):
     
     raw_field_dataset = raw_field_dataset.copy()
     raw_field_dataset[raw_field_dataset.isin(null_values)] = np.nan
-    
     if callable(field_type):
         return field_type(raw_field_dataset)
     elif field_type == 'binary':
@@ -499,6 +502,8 @@ def parse_field_data(raw_field_dataset, field_type, null_values = {-1, -3}):
         return get_row_last_values(raw_field_dataset)
     elif field_type == 'set':
         return raw_field_dataset.apply(lambda raw_values: set(raw_values.dropna().unique()), axis = 1)
+    elif field_type in [0,1,2,3]:
+        return get_visit(raw_field_dataset,field_type)
     else:
         raise Exception('Unexpected field type: %s' % field_type)
     
@@ -513,7 +518,6 @@ def get_withdrawn_eids():
     '''
     
     withdrawn_eids = set()
-
     if ukbb_paths.PARTICIPANT_WITHDRAWALS_DIR is not None:
         for file_name in os.listdir(ukbb_paths.PARTICIPANT_WITHDRAWALS_DIR):
             withdrawn_eids |= set(pd.read_csv(os.path.join(ukbb_paths.PARTICIPANT_WITHDRAWALS_DIR, file_name), names = ['eid'])['eid'])
@@ -586,7 +590,7 @@ def _determine_required_field_ids(fields_specs, only_caucasians):
     return field_ids
     
 def _get_field_columns(columns, field_id):
-    return [column for column in columns if column.startswith('%d-' % field_id)]
+    return [column for column in columns if column.startswith(f'{field_id}-')]
     
 def _filter_caucasians(raw_dataset, verbose):
 
